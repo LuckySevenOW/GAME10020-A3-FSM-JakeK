@@ -1,3 +1,4 @@
+using JetBrains.Annotations;
 using System.Collections;
 using System.Collections.Generic;
 using TMPro;
@@ -10,11 +11,11 @@ using UnityEngine.SceneManagement;
 
 public class SimpleStateMachine : MonoBehaviour
 {
-    enum State { Idle, Patrol, Chase, Search }
+    enum State { Idle, Wander, Graze, Alert, Flee, Cooldown }
 
     [Header("Scene References")]
     public Transform character;
-    public Transform[] patrolWaypoints;
+    public Transform[] wanderWaypoints;
     public TextMeshProUGUI stateText;
 
     [Header("Config")]
@@ -22,9 +23,11 @@ public class SimpleStateMachine : MonoBehaviour
     public float waypointThreshold = 0.6f;
     public float rotationSpeed = 1f;
     public float searchTimeThreshold = 5.0f;
-    public float playerDistThreshold = 2.0f;
+    public float playerDistThreshold = 7.0f;
+    public float playerCooldownThreshold = 2.0f;
+    public float slowSpeed = 1.25f;
     public float normalSpeed = 3.5f;
-    public float chaseSpeed = 5.0f;
+    public float fleeSpeed = 6.0f;
 
     [Header("Vision Settings")]
     public float viewRadius = 10f;
@@ -33,11 +36,12 @@ public class SimpleStateMachine : MonoBehaviour
 
     State state;
     NavMeshAgent agent;
-    int patrolIndex = 0;
+    int wanderIndex = 0;
 
-    float idleTime;
+    public float idleTime;
     float searchTime;
     bool canSeePlayer;
+
 
     private void Awake()
     {
@@ -46,7 +50,7 @@ public class SimpleStateMachine : MonoBehaviour
 
     void Start()
     {
-        state = State.Patrol;
+        state = State.Idle;
     }
 
     void Update()
@@ -56,117 +60,172 @@ public class SimpleStateMachine : MonoBehaviour
             case State.Idle:
                 Idle();
                 break;
-
-            case State.Patrol:
-                Patrol();
+            case State.Wander:
+                Wander();
                 break;
-            case State.Chase:
-                Chase();
+            case State.Flee:
+                Flee();
                 break;
-            case State.Search:
-                Search();
+            case State.Cooldown:
+                Cooldown();
+                break;
+            case State.Graze:
+                Graze();
+                break;
+            case State.Alert:
+                Alert();
                 break;
         }
-
-        /*
-        // regardless of state, NPC always looks in the direction they are moving
-        if (agent.velocity.magnitude > 0.1f)
-        {
-            Vector3 direction = agent.velocity.normalized;
-            Quaternion lookDirection = Quaternion.LookRotation(direction);
-            transform.rotation = Quaternion.Slerp(transform.rotation, lookDirection, Time.deltaTime * rotationSpeed);
-        }
-        */
 
         // show state on screen
         stateText.text = $"State: {state}";
-
-        // if NPC ever gets close to player, end 
-        Vector3 toPlayer = character.position - transform.position;
-        float distToPlayer = toPlayer.magnitude;
-        if (distToPlayer < playerDistThreshold && canSeePlayer) SceneManager.LoadScene("END");
     }
 
     void Idle()
     {
         agent.speed = normalSpeed;
 
-        // during idle, can never see player
-        canSeePlayer = false;
+        // during idle, can see player
+        canSeePlayer = IsInViewCone();
+
+        // If you can see the player at any time, go to Alert.
+        if (canSeePlayer)
+        {
+            Debug.Log(state);
+            state = State.Alert;
+        }
 
         float idleTimeElapsed = Time.time - idleTime;
         if (idleTimeElapsed >= idleTimeThreshold)
         {
             Debug.Log(state);
-            state = State.Patrol;
+            state = State.Wander;
+            idleTime = Time.time;
         }
     }
 
-    void Patrol()
+    void Wander()
     {
         agent.speed = normalSpeed;
 
-        Transform patrolTransform = patrolWaypoints[patrolIndex];
-        agent.SetDestination(patrolTransform.position);
+        Transform wanderTransform = wanderWaypoints[wanderIndex];
+        agent.SetDestination(wanderTransform.position);
 
         Vector3 positionXZ = transform.position;
         positionXZ.y = 0.0f;
 
-        Vector3 patrolPositionXZ = patrolTransform.position;
-        patrolPositionXZ.y = 0.0f;
+        Vector3 wanderPositionXZ = wanderTransform.position;
+        wanderPositionXZ.y = 0.0f;
 
-        float distance = Vector2.Distance(positionXZ, patrolPositionXZ);
+        float distance = Vector2.Distance(positionXZ, wanderPositionXZ);
         if (distance < waypointThreshold)
         {
-            IncreasePatrolIndex();
+            IncreaseWanderIndex();
+            Debug.Log(state);
+            state = State.Graze;
+            idleTime = Time.time;
+        }
+
+        // If you can see the player at any time, go to Alert.
+        canSeePlayer = IsInViewCone();
+        if (canSeePlayer)
+        {
+            Debug.Log(state);
+            state = State.Alert;
+        }
+    }
+
+    void Flee()
+    {
+        agent.speed = fleeSpeed;
+        agent.SetDestination(transform.position - character.position);
+
+        Vector3 toPlayer = character.position - transform.position;
+        float distToPlayer = toPlayer.magnitude;
+
+        // If the player leaves the detection radius, then return to Cooldown.
+        if (distToPlayer > 10)
+        {
+            state = State.Cooldown;
+            Debug.Log(state);
+            idleTime = Time.time;
+        }  
+    }
+
+    void Cooldown()
+    {
+        //Functionally identical to Idle.
+        agent.speed = slowSpeed;
+        agent.SetDestination(transform.position - character.position);
+        canSeePlayer = true;
+
+
+        float idleTimeElapsed = Time.time - idleTime;
+        if (idleTimeElapsed >= idleTimeThreshold + 3)
+        {
             Debug.Log(state);
             state = State.Idle;
             idleTime = Time.time;
         }
 
+        // If you can see the player at any time, go to Alert.
         canSeePlayer = IsInViewCone();
         if (canSeePlayer)
         {
             Debug.Log(state);
-            state = State.Chase;
+            state = State.Alert;
         }
     }
 
-    void Chase()
+    void Graze()
     {
-        agent.speed = chaseSpeed;
-        agent.SetDestination(character.position);
+        //Functionally identical to Idle, just would play a Grazing animation instead.
+        agent.speed = normalSpeed;
+
+        float idleTimeElapsed = Time.time - idleTime;
+        if (idleTimeElapsed >= idleTimeThreshold)
+        {
+            Debug.Log(state);
+            state = State.Idle;
+            idleTime = Time.time;
+        }
+
+        // If it spots the player, go to Alert state
+        canSeePlayer = IsInViewCone();
+        if (canSeePlayer)
+        {
+            Debug.Log(state);
+            state = State.Alert;
+        }
+    }
+
+    void Alert()
+    {
+        // Stops them in their tracks.
+        agent.speed = 0;
+
+        // Move away from the player.
+        Vector3 toPlayer = character.position - transform.position;
+        float distToPlayer = toPlayer.magnitude;
 
         canSeePlayer = IsInViewCone();
+
+        // If it can't see the player, go to cooldown. If it can see the player still, and they're within 5m distance, then flee.
         if (!canSeePlayer)
         {
-            state = State.Search;
+            state = State.Cooldown;
             Debug.Log(state);
-            searchTime = Time.time;
+            idleTime = Time.time;
         }
+
+        if (distToPlayer < 5 && canSeePlayer)
+        {
+            state = State.Flee;
+            Debug.Log(state);
+        }
+
     }
 
-    void Search()
-    {
-        agent.speed = chaseSpeed;
-
-        float searchTimeElapsed = Time.time - searchTime;
-
-        agent.SetDestination(transform.forward + transform.right);
-        canSeePlayer = IsInViewCone();
-
-        if (canSeePlayer)
-        {
-            state = State.Chase;
-            Debug.Log(state);
-        }
-
-        if (searchTimeElapsed >= searchTimeThreshold)
-        {
-            state = State.Patrol;
-            Debug.Log(state);
-        }
-    }
 
 
     // --- HELPER FUNCTIONS ---
@@ -193,10 +252,10 @@ public class SimpleStateMachine : MonoBehaviour
         return false;
     }
 
-    void IncreasePatrolIndex()
+    void IncreaseWanderIndex()
     {
-        patrolIndex++;
-        if (patrolIndex >= patrolWaypoints.Length) patrolIndex = 0;
+        wanderIndex++;
+        if (wanderIndex >= wanderWaypoints.Length) wanderIndex = 0;
     }
 
     // --- GIZMO DRAWING FOR DEBUG ---
@@ -205,9 +264,9 @@ public class SimpleStateMachine : MonoBehaviour
     {
         // draw the waypoints
         Gizmos.color = Color.red;
-        foreach (Transform patrolTransform in patrolWaypoints)
+        foreach (Transform wanderTransform in wanderWaypoints)
         {
-            Gizmos.DrawWireSphere(patrolTransform.position, 0.5f);
+            Gizmos.DrawWireSphere(wanderTransform.position, 0.5f);
         }
 
         // draw the view cone (2D version)
